@@ -27,6 +27,7 @@ import XCTest
 class InitiatorTests: XCTestCase {
   // 2021-11-01 @ 00:00:00 (EST)
   let date = Date(timeIntervalSince1970: 1_635_739_200)
+  let sessionTimeout: TimeInterval = 30 * 60 // 30 minutes
 
   func postBackgroundedNotification() {
     let notificationCenter = NotificationCenter.default
@@ -61,7 +62,7 @@ class InitiatorTests: XCTestCase {
   }
 
   func test_beginListening_initiatesColdStart() throws {
-    let initiator = SessionInitiator()
+    let initiator = SessionInitiator(sessionTimeout: sessionTimeout)
     var initiateCalled = false
     initiator.beginListening {
       initiateCalled = true
@@ -72,7 +73,10 @@ class InitiatorTests: XCTestCase {
   func test_appForegrounded_initiatesNewSession() throws {
     // Given
     var pausedClock = date
-    let initiator = SessionInitiator(currentTimeProvider: { pausedClock })
+    let initiator = SessionInitiator(
+      sessionTimeout: sessionTimeout,
+      currentTimeProvider: { pausedClock }
+    )
     var sessionCount = 0
     initiator.beginListening {
       sessionCount += 1
