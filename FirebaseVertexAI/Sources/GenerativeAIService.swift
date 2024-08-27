@@ -72,94 +72,62 @@ struct GenerativeAIService {
   }
 
   @available(macOS 12.0, *)
-  func loadRequestStream<T: GenerativeAIRequest>(request: T)
+  func loadRequestStream<T: GenerativeAIRequest>(request: T) async throws
     -> AsyncThrowingStream<T.Response, Error> {
-    return AsyncThrowingStream { continuation in
-      Task {
-        let urlRequest: URLRequest
-        do {
-          urlRequest = try await self.urlRequest(request: request)
-        } catch {
-          continuation.finish(throwing: error)
-          return
-        }
+    let urlRequest = try await self.urlRequest(request: request)
 
-        #if DEBUG
-          printCURLCommand(from: urlRequest)
-        #endif
+    #if DEBUG
+      printCURLCommand(from: urlRequest)
+    #endif
 
-        let stream: URLSession.AsyncBytes
-        let rawResponse: URLResponse
-        do {
-          (stream, rawResponse) = try await urlSession.bytes(for: urlRequest)
-        } catch {
-          continuation.finish(throwing: error)
-          return
-        }
+    let stream: URLSession.AsyncBytes
+    let rawResponse: URLResponse
+    (stream, rawResponse) = try await urlSession.bytes(for: urlRequest)
 
-        // Verify the status code is 200
-        let response: HTTPURLResponse
-        do {
-          response = try httpResponse(urlResponse: rawResponse)
-        } catch {
-          continuation.finish(throwing: error)
-          return
-        }
+    let response = try httpResponse(urlResponse: rawResponse)
 
-        // Verify the status code is 200
-        guard response.statusCode == 200 else {
-          Logging.network
-            .error("[FirebaseVertexAI] The server responded with an error: \(response)")
-          var responseBody = ""
-          for try await line in stream.lines {
-            responseBody += line + "\n"
-          }
-
-          Logging.default.error("[FirebaseVertexAI] Response payload: \(responseBody)")
-          continuation.finish(throwing: parseError(responseBody: responseBody))
-
-          return
-        }
-
-        // Received lines that are not server-sent events (SSE); these are not prefixed with "data:"
-        var extraLines = ""
-
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        for try await line in stream.lines {
-          Logging.network.debug("[FirebaseVertexAI] Stream response: \(line)")
-
-          if line.hasPrefix("data:") {
-            // We can assume 5 characters since it's utf-8 encoded, removing `data:`.
-            let jsonText = String(line.dropFirst(5))
-            let data: Data
-            do {
-              data = try jsonData(jsonText: jsonText)
-            } catch {
-              continuation.finish(throwing: error)
-              return
-            }
-
-            // Handle the content.
-            do {
-              let content = try parseResponse(T.Response.self, from: data)
-              continuation.yield(content)
-            } catch {
-              continuation.finish(throwing: error)
-              return
-            }
-          } else {
-            extraLines += line
-          }
-        }
-
-        if extraLines.count > 0 {
-          continuation.finish(throwing: parseError(responseBody: extraLines))
-          return
-        }
-
-        continuation.finish(throwing: nil)
+    // Verify the status code is 200
+    guard response.statusCode == 200 else {
+      Logging.network
+        .error("[FirebaseVertexAI] The server responded with an error: \(response)")
+      var responseBody = ""
+      for try await line in stream.lines {
+        responseBody += line + "\n"
       }
+
+      Logging.default.error("[FirebaseVertexAI] Response payload: \(responseBody)")
+      throw parseError(responseBody: responseBody)
+    }
+
+    // Received lines that are not server-sent events (SSE); these are not prefixed with "data:"
+    var extraLines = ""
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+    var linesStream = stream.lines.makeAsyncIterator()
+
+    return AsyncThrowingStream<T.Response, Error> {
+      while let line = try await linesStream.next() {
+        Logging.network.debug("[FirebaseVertexAI] Stream response: \(line)")
+
+        if line.hasPrefix("data:") {
+          // We can assume 5 characters since it's utf-8 encoded, removing `data:`.
+          let jsonText = String(line.dropFirst(5))
+          let data = try jsonData(jsonText: jsonText)
+
+          // Handle the content.
+          return try parseResponse(T.Response.self, from: data)
+        } else {
+          extraLines += line
+        }
+      }
+
+      if extraLines.count > 0 {
+        throw parseError(responseBody: extraLines)
+      }
+
+      return nil
     }
   }
 
