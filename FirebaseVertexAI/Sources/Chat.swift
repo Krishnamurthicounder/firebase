@@ -17,7 +17,7 @@ import Foundation
 /// An object that represents a back-and-forth chat with a model, capturing the history and saving
 /// the context in memory between each message sent.
 @available(iOS 15.0, macOS 11.0, macCatalyst 15.0, tvOS 15.0, watchOS 8.0, *)
-public class Chat {
+public actor Chat {
   private let model: GenerativeModel
 
   /// Initializes a new chat representing a 1:1 conversation between model and user.
@@ -85,9 +85,9 @@ public class Chat {
   /// - Parameter parts: The new content to send as a single chat message.
   /// - Returns: A stream containing the model's response or an error if an error occurred.
   @available(macOS 12.0, *)
-  public func sendMessageStream(_ parts: any ThrowingPartsRepresentable...)
+  public func sendMessageStream(_ parts: any ThrowingPartsRepresentable...) async throws
     -> AsyncThrowingStream<GenerateContentResponse, Error> {
-    return try sendMessageStream([ModelContent(parts: parts)])
+    return try await sendMessageStream([ModelContent(parts: parts)])
   }
 
   /// Sends a message using the existing history of this chat as context. If successful, the message
@@ -95,58 +95,52 @@ public class Chat {
   /// - Parameter content: The new content to send as a single chat message.
   /// - Returns: A stream containing the model's response or an error if an error occurred.
   @available(macOS 12.0, *)
-  public func sendMessageStream(_ content: @autoclosure () throws -> [ModelContent])
+  public func sendMessageStream(_ content: @autoclosure () throws -> [ModelContent]) async throws
     -> AsyncThrowingStream<GenerateContentResponse, Error> {
     let resolvedContent: [ModelContent]
     do {
       resolvedContent = try content()
     } catch let underlying {
-      return AsyncThrowingStream { continuation in
-        let error: Error
+      // TODO: Consider throwing this before the stream.
+      return AsyncThrowingStream {
         if let contentError = underlying as? ImageConversionError {
-          error = GenerateContentError.promptImageContentError(underlying: contentError)
+          throw GenerateContentError.promptImageContentError(underlying: contentError)
         } else {
-          error = GenerateContentError.internalError(underlying: underlying)
+          throw GenerateContentError.internalError(underlying: underlying)
         }
-        continuation.finish(throwing: error)
       }
     }
 
-    return AsyncThrowingStream { continuation in
-      Task {
-        var aggregatedContent: [ModelContent] = []
+    var aggregatedContent: [ModelContent] = []
 
-        // Ensure that the new content has the role set.
-        let newContent: [ModelContent] = resolvedContent.map(populateContentRole(_:))
+    // Ensure that the new content has the role set.
+    let newContent: [ModelContent] = resolvedContent.map(populateContentRole(_:))
 
-        // Send the history alongside the new message as context.
-        let request = history + newContent
-        let stream = model.generateContentStream(request)
-        do {
-          for try await chunk in stream {
-            // Capture any content that's streaming. This should be populated if there's no error.
-            if let chunkContent = chunk.candidates.first?.content {
-              aggregatedContent.append(chunkContent)
-            }
+    // Send the history alongside the new message as context.
+    let request = history + newContent
+    let stream = try await model.generateContentStream(request)
 
-            // Pass along the chunk.
-            continuation.yield(chunk)
-          }
-        } catch {
-          // Rethrow the error that the underlying stream threw. Don't add anything to history.
-          continuation.finish(throwing: error)
-          return
+    var streamIterator = stream.makeAsyncIterator()
+
+    return AsyncThrowingStream {
+      while let chunk = try await streamIterator.next() {
+        // Capture any content that's streaming. This should be populated if there's no error.
+        if let chunkContent = chunk.candidates.first?.content {
+          aggregatedContent.append(chunkContent)
         }
 
-        // Save the request.
-        history.append(contentsOf: newContent)
-
-        // Aggregate the content to add it to the history before we finish.
-        let aggregated = aggregatedChunks(aggregatedContent)
-        history.append(aggregated)
-
-        continuation.finish()
+        // Pass along the chunk.
+        return chunk
       }
+
+      // Save the request.
+      self.history.append(contentsOf: newContent)
+
+      // Aggregate the content to add it to the history before we finish.
+      let aggregated = self.aggregatedChunks(aggregatedContent)
+      self.history.append(aggregated)
+
+      return nil
     }
   }
 
