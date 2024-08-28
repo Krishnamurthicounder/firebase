@@ -627,6 +627,10 @@ let package = Package(
     ),
     .target(
       name: "FirebaseSharedSwift",
+      dependencies: [
+        "FirebaseCore",
+        "FirebaseCoreExtension",
+      ],
       path: "FirebaseSharedSwift/Sources",
       exclude: [
         "third_party/FirebaseDataEncoder/LICENSE",
@@ -1300,6 +1304,7 @@ let package = Package(
         "FirebaseAuthInterop",
         "FirebaseCore",
         "FirebaseCoreExtension",
+        "FirebaseSharedSwift",
       ],
       path: "FirebaseVertexAI/Sources"
     ),
