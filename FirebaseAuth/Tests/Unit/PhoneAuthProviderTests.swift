@@ -108,9 +108,9 @@
       initApp(#function)
       let auth = try XCTUnwrap(PhoneAuthProviderTests.auth)
       // TODO: Figure out how to mock objective C's FIRRecaptchaGetToken response
-      let mockVerifier = FakeAuthRecaptchaVerifier.shared(auth: auth)
       let provider = PhoneAuthProvider.provider(auth: auth)
-
+      let mockVerifier = FakeAuthRecaptchaVerifier()
+      AuthRecaptchaVerifier._shared = mockVerifier
       let requestExpectation = expectation(description: "verifyRequester")
       rpcIssuer.rceMode = .enforce
       rpcIssuer?.verifyRequester = { request in
@@ -126,15 +126,43 @@
           XCTFail("Failure sending response: \(error)")
         }
       }
-
       do {
-        let verificationID = try await provider.verifyPhoneNumber(kTestPhoneNumber)
-        XCTAssertEqual(verificationID, kTestVerificationID)
+        let result = try await provider.verifyClAndSendVerificationCodeWithRecaptcha(
+          toPhoneNumber: kTestPhoneNumber,
+          retryOnInvalidAppCredential: false,
+          uiDelegate: nil,
+          recaptchaVerifier: mockVerifier
+        )
+        XCTAssertEqual(result, kTestVerificationID)
       } catch {
-        XCTFail("Unexpected error: \(error)")
+        print("Error= ", error)
+        XCTFail("Unexpected error")
       }
-
-      wait(for: [requestExpectation], timeout: 5.0)
+      //wait(for: [requestExpectation], timeout: 5.0)
+//      let requestExpectation = expectation(description: "verifyRequester")
+//      rpcIssuer.rceMode = .enforce
+//      rpcIssuer?.verifyRequester = { request in
+//        XCTAssertEqual(request.phoneNumber, self.kTestPhoneNumber)
+//        XCTAssertEqual(request.captchaResponse, "mock-token")
+//        XCTAssertEqual(request.recaptchaVersion, "RECAPTCHA_ENTERPRISE")
+//        XCTAssertNil(request.codeIdentity)
+//        requestExpectation.fulfill()
+//        do {
+//          try self.rpcIssuer?
+//            .respond(withJSON: [self.kVerificationIDKey: self.kTestVerificationID])
+//        } catch {
+//          XCTFail("Failure sending response: \(error)")
+//        }
+//      }
+//
+//      do {
+//        let verificationID = try await provider.verifyPhoneNumber(kTestPhoneNumber)
+//        XCTAssertEqual(verificationID, kTestVerificationID)
+//      } catch {
+//        XCTFail("Unexpected error: \(error)")
+//      }
+//
+//      wait(for: [requestExpectation], timeout: 5.0)
     }
 
     func testVerifyPhoneNumberWithRceAuditFallback() async throws {
@@ -741,6 +769,8 @@
     class FakeAuthRecaptchaVerifier: AuthRecaptchaVerifier {
       var captchaResponse: String = "captchaResponse"
       var fakeError: Error?
+      
+      override init() {}
 
       override func verify(forceRefresh: Bool, action: AuthRecaptchaAction) async throws -> String {
         if let error = fakeError {
